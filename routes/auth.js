@@ -1,10 +1,13 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const Lab = require('../models/Lab');
 const LoginAttempt = require('../models/LoginAttempt');
+const EmployeeSession = require('../models/EmployeeSession');
+const ActivityLog = require('../models/ActivityLog');
 const { isWithinGeofence, validateLocation } = require('../utils/geofence');
 const { auth, requireLabAdmin } = require('../middleware/auth');
 
@@ -95,7 +98,7 @@ router.post('/register-lab', [
   }
 });
 
-// User Login with Geofence Check
+// User Login with Geofence Check and Session Tracking
 router.post('/login', [
   body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
   body('password').exists().withMessage('Password required'),
@@ -173,8 +176,85 @@ router.post('/login', [
           allowedRadius: user.labId.geofence.radius
         });
       }
-    } else {
-      // Log successful admin login
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user._id, role: user.role, labId: user.labId._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Generate unique session token for real-time tracking
+    const sessionToken = token; // Use JWT token as session token
+
+    // Extract device information
+    const userAgent = req.get('User-Agent') || '';
+    const deviceInfo = {
+      userAgent: userAgent,
+      ipAddress: req.ip,
+      browser: userAgent.split(' ')[0] || 'Unknown',
+      os: userAgent.includes('Mac') ? 'macOS' : 
+          userAgent.includes('Windows') ? 'Windows' : 
+          userAgent.includes('Linux') ? 'Linux' : 'Unknown'
+    };
+
+    // Close any existing active sessions for this user
+    await EmployeeSession.updateMany(
+      { 
+        userId: user._id, 
+        isActive: true 
+      },
+      { 
+        isActive: false, 
+        logoutTime: new Date(),
+        sessionDuration: function() {
+          return Math.round((new Date() - this.loginTime) / (1000 * 60));
+        }
+      }
+    );
+
+    // Create new employee session for real-time tracking
+    const session = new EmployeeSession({
+      userId: user._id,
+      labId: user.labId._id,
+      sessionToken: sessionToken,
+      loginTime: new Date(),
+      lastActivity: new Date(),
+      currentLocation: userLocation,
+      isActive: true,
+      deviceInfo: deviceInfo,
+      activityLog: [{
+        timestamp: new Date(),
+        action: 'login',
+        location: userLocation,
+        metadata: deviceInfo
+      }]
+    });
+
+    await session.save();
+
+    // Log login activity in ActivityLog
+    await new ActivityLog({
+      userId: user._id,
+      labId: user.labId._id,
+      sessionId: session._id,
+      action: 'login',
+      timestamp: new Date(),
+      location: userLocation,
+      distanceFromLab: user.role === 'lab_employee' ? 
+        isWithinGeofence(userLocation, user.labId.location, user.labId.geofence.radius).distance : 0,
+      isWithinGeofence: user.role === 'lab_employee' ? 
+        isWithinGeofence(userLocation, user.labId.location, user.labId.geofence.radius).isWithin : true,
+      metadata: {
+        ...deviceInfo,
+        endpoint: '/api/auth/login',
+        loginMethod: 'credentials'
+      }
+    }).save();
+
+    // Log successful login attempt (for non-employees or employees within geofence)
+    if (user.role === 'lab_admin') {
       const adminAttempt = new LoginAttempt({
         userId: user._id,
         labId: user.labId._id,
@@ -190,17 +270,10 @@ router.post('/login', [
       await adminAttempt.save();
     }
 
-    // Update last login
+    // Update last login information
     user.lastLogin = new Date();
     user.lastLoginLocation = userLocation;
     await user.save();
-
-    // Generate token
-    const token = jwt.sign(
-      { id: user._id, role: user.role, labId: user.labId._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
 
     res.json({
       message: 'Login successful',
@@ -215,6 +288,11 @@ router.post('/login', [
           id: user.labId._id,
           name: user.labId.name
         }
+      },
+      session: {
+        id: session._id,
+        loginTime: session.loginTime,
+        isRealTimeTrackingEnabled: true
       }
     });
 
@@ -224,16 +302,147 @@ router.post('/login', [
   }
 });
 
-// Get current user profile
+// Logout endpoint with session cleanup
+router.post('/logout', auth, async (req, res) => {
+  try {
+    const sessionToken = req.headers.authorization?.replace('Bearer ', '');
+
+    if (sessionToken) {
+      const session = await EmployeeSession.findOne({
+        sessionToken,
+        userId: req.user.id,
+        isActive: true
+      });
+
+      if (session) {
+        // Calculate session duration
+        const duration = Math.round((new Date() - session.loginTime) / (1000 * 60)); // minutes
+        
+        session.isActive = false;
+        session.logoutTime = new Date();
+        session.sessionDuration = duration;
+        
+        // Add logout to activity log
+        session.activityLog.push({
+          timestamp: new Date(),
+          action: 'logout',
+          metadata: {
+            sessionDuration: duration,
+            logoutMethod: 'manual'
+          }
+        });
+
+        await session.save();
+
+        // Log logout activity
+        await new ActivityLog({
+          userId: req.user.id,
+          labId: req.user.labId,
+          sessionId: session._id,
+          action: 'manual_logout',
+          timestamp: new Date(),
+          metadata: {
+            sessionDuration: duration,
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent'),
+            endpoint: '/api/auth/logout'
+          }
+        }).save();
+      }
+    }
+
+    res.json({ 
+      message: 'Logged out successfully',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get current user profile with session info
 router.get('/profile', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id)
-      .populate('labId', 'name address phone email')
+      .populate('labId', 'name address phone email location geofence')
       .select('-password');
     
-    res.json(user);
+    // Get current active session
+    const sessionToken = req.headers.authorization?.replace('Bearer ', '');
+    const currentSession = await EmployeeSession.findOne({
+      sessionToken,
+      userId: req.user.id,
+      isActive: true
+    });
+
+    const response = {
+      ...user.toObject(),
+      currentSession: currentSession ? {
+        id: currentSession._id,
+        loginTime: currentSession.loginTime,
+        lastActivity: currentSession.lastActivity,
+        sessionDuration: currentSession.loginTime ? 
+          Math.round((new Date() - currentSession.loginTime) / (1000 * 60)) : 0,
+        currentLocation: currentSession.currentLocation,
+        isActive: currentSession.isActive
+      } : null
+    };
+    
+    res.json(response);
   } catch (error) {
     console.error('Profile fetch error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get user's session history
+router.get('/session-history', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, startDate, endDate } = req.query;
+
+    let dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter = {
+        loginTime: {
+          $gte: new Date(startDate),
+          $lte: new Date(endDate)
+        }
+      };
+    }
+
+    const sessions = await EmployeeSession.find({
+      userId: req.user.id,
+      ...dateFilter
+    })
+    .sort({ loginTime: -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit)
+    .select('-activityLog'); // Exclude detailed activity log for performance
+
+    const total = await EmployeeSession.countDocuments({
+      userId: req.user.id,
+      ...dateFilter
+    });
+
+    const sessionsWithDuration = sessions.map(session => ({
+      ...session.toObject(),
+      calculatedDuration: session.sessionDuration || 
+        (session.logoutTime ? 
+          Math.round((session.logoutTime - session.loginTime) / (1000 * 60)) :
+          Math.round((new Date() - session.loginTime) / (1000 * 60)))
+    }));
+
+    res.json({
+      sessions: sessionsWithDuration,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      total
+    });
+
+  } catch (error) {
+    console.error('Session history error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
