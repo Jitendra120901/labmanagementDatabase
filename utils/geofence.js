@@ -1,4 +1,6 @@
-// Enhanced geofence function with GPS accuracy handling
+// utils/geofence.js - Fixed version with proper geolib import
+const geolib = require('geolib');
+
 const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
   // Validate input coordinates
   if (!userLocation || !labLocation) {
@@ -13,11 +15,12 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
     throw new Error('Invalid lab location coordinates');
   }
   
-  // Calculate accurate distance using Haversine formula with high precision
+  // Calculate distance using geolib
   let distance;
   try {
-    distance = geolib.getPreciseDistance ? 
-      geolib.getPreciseDistance(
+    // Try precise distance first, fallback to regular distance
+    if (typeof geolib.getPreciseDistance === 'function') {
+      distance = geolib.getPreciseDistance(
         { 
           latitude: parseFloat(userLocation.latitude), 
           longitude: parseFloat(userLocation.longitude) 
@@ -26,9 +29,11 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
           latitude: parseFloat(labLocation.latitude), 
           longitude: parseFloat(labLocation.longitude) 
         },
-        1 // accuracy in meters (1 meter precision)
-      ) :
-      geolib.getDistance(
+        1 // accuracy in meters
+      );
+    } else {
+      // Fallback to regular getDistance
+      distance = geolib.getDistance(
         { 
           latitude: parseFloat(userLocation.latitude), 
           longitude: parseFloat(userLocation.longitude) 
@@ -38,17 +43,15 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
           longitude: parseFloat(labLocation.longitude) 
         }
       );
+    }
   } catch (error) {
-    // Fallback to basic distance calculation
-    distance = geolib.getDistance(
-      { 
-        latitude: parseFloat(userLocation.latitude), 
-        longitude: parseFloat(userLocation.longitude) 
-      },
-      { 
-        latitude: parseFloat(labLocation.latitude), 
-        longitude: parseFloat(labLocation.longitude) 
-      }
+    console.error('Geolib distance calculation error:', error);
+    // Manual Haversine formula as ultimate fallback
+    distance = calculateHaversineDistance(
+      parseFloat(userLocation.latitude), 
+      parseFloat(userLocation.longitude),
+      parseFloat(labLocation.latitude), 
+      parseFloat(labLocation.longitude)
     );
   }
   
@@ -62,18 +65,19 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
   // Calculate bearing if available
   let bearing = null;
   try {
-    if (geolib.getBearing) {
+    if (typeof geolib.getBearing === 'function') {
       bearing = geolib.getBearing(
         { latitude: parseFloat(labLocation.latitude), longitude: parseFloat(labLocation.longitude) },
         { latitude: parseFloat(userLocation.latitude), longitude: parseFloat(userLocation.longitude) }
       );
-    } else if (geolib.getGreatCircleBearing) {
+    } else if (typeof geolib.getGreatCircleBearing === 'function') {
       bearing = geolib.getGreatCircleBearing(
         { latitude: parseFloat(labLocation.latitude), longitude: parseFloat(labLocation.longitude) },
         { latitude: parseFloat(userLocation.latitude), longitude: parseFloat(userLocation.longitude) }
       );
     }
   } catch (error) {
+    console.error('Bearing calculation error:', error);
     bearing = null;
   }
   
@@ -89,6 +93,23 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
     isWithinOriginalRadius: distance <= radiusInMeters,
     isWithinGPSBuffer: distance <= effectiveRadius && distance > radiusInMeters
   };
+};
+
+// Manual Haversine distance calculation as fallback
+const calculateHaversineDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371e3; // Earth's radius in meters
+  const φ1 = lat1 * Math.PI / 180; // φ, λ in radians
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+  const distance = R * c; // in metres
+  return Math.round(distance);
 };
 
 // Enhanced validation that's more lenient
@@ -115,9 +136,10 @@ const formatDistance = (distanceInMeters) => {
   }
 };
 
-// New function to get GPS accuracy estimate
+// Get GPS accuracy estimate
 const getGPSAccuracyEstimate = (userAgent) => {
-  // Different devices have different GPS accuracy
+  if (!userAgent) return 15;
+  
   if (userAgent.includes('iPhone')) {
     return 5; // iPhones generally have better GPS
   } else if (userAgent.includes('Android')) {
@@ -127,4 +149,10 @@ const getGPSAccuracyEstimate = (userAgent) => {
   }
 };
 
-module.exports = { isWithinGeofence, validateLocation, formatDistance, getGPSAccuracyEstimate };
+module.exports = { 
+  isWithinGeofence, 
+  validateLocation, 
+  formatDistance, 
+  getGPSAccuracyEstimate,
+  calculateHaversineDistance 
+};

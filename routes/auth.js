@@ -104,8 +104,7 @@ router.post('/register-lab', [
   }
 });
 
-// User Login with Geofence Check and Session Tracking
-// Enhanced login route with GPS accuracy handling
+// Enhanced login route with debugging
 router.post('/login', [
   body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
   body('password').exists().withMessage('Password required'),
@@ -126,6 +125,13 @@ router.post('/login', [
       accuracy: accuracy ? parseFloat(accuracy) : null 
     };
 
+    // Debug logging
+    console.log('Login attempt:', {
+      email,
+      userLocation,
+      accuracy
+    });
+
     // Find user
     const user = await User.findOne({ email, isActive: true }).populate('labId');
     
@@ -139,14 +145,39 @@ router.post('/login', [
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    // Debug user and lab info
+    console.log('User found:', {
+      id: user._id,
+      role: user.role,
+      labId: user.labId._id,
+      labLocation: user.labId.location,
+      labGeofence: user.labId.geofence
+    });
+
     // Check geofence for lab employees with GPS accuracy consideration
     if (user.role === 'lab_employee') {
       try {
+        // Debug: Check if lab has geofence setup
+        if (!user.labId.geofence || !user.labId.geofence.radius) {
+          console.error('Lab geofence not configured properly:', user.labId.geofence);
+          return res.status(500).json({ 
+            message: 'Lab geofence not configured. Please contact administrator.' 
+          });
+        }
+
+        console.log('Performing geofence check:', {
+          userLocation,
+          labLocation: user.labId.location,
+          radius: user.labId.geofence.radius
+        });
+
         const geofenceCheck = isWithinGeofence(
           userLocation,
           user.labId.location,
           user.labId.geofence.radius
         );
+
+        console.log('Geofence check result:', geofenceCheck);
 
         // Log attempt with GPS accuracy info
         const attemptData = {
@@ -184,13 +215,16 @@ router.post('/login', [
             effectiveRadius: formatDistance(geofenceCheck.effectiveRadius),
             effectiveRadiusInMeters: geofenceCheck.effectiveRadius,
             gpsAccuracyBuffer: geofenceCheck.gpsAccuracyBuffer,
-            gpsAccuracyNote: "Distance calculation includes GPS accuracy buffer",
-            recommendations: [
-              "Move closer to the lab center",
-              "Try logging in from a different location within the lab",
-              "Ensure GPS is enabled and wait for better signal",
-              "Contact admin if you're inside the lab premises"
-            ]
+            gpsAccuracyNote: "Distance calculation includes GPS accuracy buffer for better reliability",
+            debug: {
+              userLocation,
+              labLocation: user.labId.location,
+              calculatedDistance: geofenceCheck.distance,
+              originalRadius: user.labId.geofence.radius,
+              effectiveRadius: geofenceCheck.effectiveRadius,
+              isWithinOriginalRadius: geofenceCheck.isWithinOriginalRadius,
+              isWithinGPSBuffer: geofenceCheck.isWithinGPSBuffer
+            }
           };
           
           if (geofenceCheck.bearing !== null) {
@@ -209,18 +243,95 @@ router.post('/login', [
         console.error('Geofence calculation error:', geofenceError);
         return res.status(400).json({
           message: 'Invalid location data provided',
-          error: geofenceError.message
+          error: geofenceError.message,
+          debug: {
+            userLocation,
+            labLocation: user.labId.location,
+            labGeofence: user.labId.geofence
+          }
         });
       }
     }
 
-    // Rest of login logic remains the same...
-    // Generate JWT token, create session, etc.
+    // Generate JWT token
     const token = jwt.sign(
       { id: user._id, role: user.role, labId: user.labId._id },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
+
+    // Generate unique session token for real-time tracking
+    const sessionToken = token;
+
+    // Extract device information
+    const userAgent = req.get('User-Agent') || '';
+    const deviceInfo = {
+      userAgent: userAgent,
+      ipAddress: req.ip,
+      browser: userAgent.split(' ')[0] || 'Unknown',
+      os: userAgent.includes('Mac') ? 'macOS' : 
+          userAgent.includes('Windows') ? 'Windows' : 
+          userAgent.includes('Linux') ? 'Linux' : 'Unknown'
+    };
+
+    // Close any existing active sessions for this user
+    const currentTime = new Date();
+    const activeSessions = await EmployeeSession.find({
+      userId: user._id,
+      isActive: true
+    });
+
+    // Update each session individually to calculate duration properly
+    for (const session of activeSessions) {
+      const duration = Math.round((currentTime - session.loginTime) / (1000 * 60));
+      session.isActive = false;
+      session.logoutTime = currentTime;
+      session.sessionDuration = duration;
+      await session.save();
+    }
+
+    // Create new employee session for real-time tracking
+    const session = new EmployeeSession({
+      userId: user._id,
+      labId: user.labId._id,
+      sessionToken: sessionToken,
+      loginTime: new Date(),
+      lastActivity: new Date(),
+      currentLocation: userLocation,
+      isActive: true,
+      deviceInfo: deviceInfo,
+      activityLog: [{
+        timestamp: new Date(),
+        action: 'login',
+        location: userLocation,
+        metadata: { ...deviceInfo, gpsAccuracy: userLocation.accuracy }
+      }]
+    });
+
+    await session.save();
+
+    // Log successful login attempt
+    if (user.role === 'lab_admin') {
+      const adminAttempt = new LoginAttempt({
+        userId: user._id,
+        labId: user.labId._id,
+        attemptLocation: userLocation,
+        isSuccessful: true,
+        isWithinGeofence: true, // Admin can login from anywhere
+        distanceFromLab: 0,
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent')
+      });
+      
+      await adminAttempt.save();
+    }
+
+    // Update last login information
+    user.lastLogin = new Date();
+    user.lastLoginLocation = userLocation;
+    await user.save();
+
+    console.log('Login successful for user:', user.email);
 
     res.json({
       message: 'Login successful',
@@ -236,16 +347,20 @@ router.post('/login', [
           name: user.labId.name
         }
       },
-      locationInfo: user.role === 'lab_employee' ? {
-        distance: formatDistance(geofenceCheck.distance),
-        withinOriginalRadius: geofenceCheck.isWithinOriginalRadius,
-        usedGPSBuffer: geofenceCheck.isWithinGPSBuffer
-      } : null
+      session: {
+        id: session._id,
+        loginTime: session.loginTime,
+        isRealTimeTrackingEnabled: true
+      }
     });
 
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 

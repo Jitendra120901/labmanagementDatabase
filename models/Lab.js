@@ -59,7 +59,7 @@ const labSchema = new mongoose.Schema({
   geofence: {
     radius: {
       type: Number,
-      default: 35 // 20 meters
+      default: 35 
     }
   },
   isActive: {
