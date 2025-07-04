@@ -27,7 +27,7 @@ app.set('trust proxy', true);
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/dashboard', require('./routes/dashboard'));
-app.use('/api/realtime', require('./routes/realTime'));
+app.use('/api/realtime', require('./routes/realtime'));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
