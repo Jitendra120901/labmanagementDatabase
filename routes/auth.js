@@ -200,19 +200,21 @@ router.post('/login', [
     };
 
     // Close any existing active sessions for this user
-    await EmployeeSession.updateMany(
-      { 
-        userId: user._id, 
-        isActive: true 
-      },
-      { 
-        isActive: false, 
-        logoutTime: new Date(),
-        sessionDuration: function() {
-          return Math.round((new Date() - this.loginTime) / (1000 * 60));
-        }
-      }
-    );
+    // FIXED: Calculate session duration properly for bulk update
+    const currentTime = new Date();
+    const activeSessions = await EmployeeSession.find({
+      userId: user._id,
+      isActive: true
+    });
+
+    // Update each session individually to calculate duration properly
+    for (const session of activeSessions) {
+      const duration = Math.round((currentTime - session.loginTime) / (1000 * 60));
+      session.isActive = false;
+      session.logoutTime = currentTime;
+      session.sessionDuration = duration;
+      await session.save();
+    }
 
     // Create new employee session for real-time tracking
     const session = new EmployeeSession({
