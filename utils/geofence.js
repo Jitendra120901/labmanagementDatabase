@@ -15,31 +15,73 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
   }
   
   // Calculate accurate distance using Haversine formula with high precision
-  const distance = geolib.getPreciseDistance(
-    { 
-      latitude: parseFloat(userLocation.latitude), 
-      longitude: parseFloat(userLocation.longitude) 
-    },
-    { 
-      latitude: parseFloat(labLocation.latitude), 
-      longitude: parseFloat(labLocation.longitude) 
-    },
-    1 // accuracy in meters (1 meter precision)
-  );
+  // Use getPreciseDistance if available, otherwise fall back to getDistance
+  let distance;
+  try {
+    distance = geolib.getPreciseDistance ? 
+      geolib.getPreciseDistance(
+        { 
+          latitude: parseFloat(userLocation.latitude), 
+          longitude: parseFloat(userLocation.longitude) 
+        },
+        { 
+          latitude: parseFloat(labLocation.latitude), 
+          longitude: parseFloat(labLocation.longitude) 
+        },
+        1 // accuracy in meters (1 meter precision)
+      ) :
+      geolib.getDistance(
+        { 
+          latitude: parseFloat(userLocation.latitude), 
+          longitude: parseFloat(userLocation.longitude) 
+        },
+        { 
+          latitude: parseFloat(labLocation.latitude), 
+          longitude: parseFloat(labLocation.longitude) 
+        }
+      );
+  } catch (error) {
+    // Fallback to basic distance calculation
+    distance = geolib.getDistance(
+      { 
+        latitude: parseFloat(userLocation.latitude), 
+        longitude: parseFloat(userLocation.longitude) 
+      },
+      { 
+        latitude: parseFloat(labLocation.latitude), 
+        longitude: parseFloat(labLocation.longitude) 
+      }
+    );
+  }
   
   // Convert radius from meters to meters (assuming radius is in meters)
-  // If radius is in different unit, convert accordingly
   const radiusInMeters = parseFloat(radius);
+  
+  // Calculate bearing if getBearing is available
+  let bearing = null;
+  try {
+    if (geolib.getBearing) {
+      bearing = geolib.getBearing(
+        { latitude: parseFloat(labLocation.latitude), longitude: parseFloat(labLocation.longitude) },
+        { latitude: parseFloat(userLocation.latitude), longitude: parseFloat(userLocation.longitude) }
+      );
+    } else if (geolib.getGreatCircleBearing) {
+      bearing = geolib.getGreatCircleBearing(
+        { latitude: parseFloat(labLocation.latitude), longitude: parseFloat(labLocation.longitude) },
+        { latitude: parseFloat(userLocation.latitude), longitude: parseFloat(userLocation.longitude) }
+      );
+    }
+  } catch (error) {
+    // Bearing calculation failed, continue without it
+    bearing = null;
+  }
   
   return {
     isWithin: distance <= radiusInMeters,
     distance: distance, // distance in meters
     distanceInKm: Math.round((distance / 1000) * 100) / 100, // rounded to 2 decimal places
     radiusInMeters: radiusInMeters,
-    bearing: geolib.getBearing(
-      { latitude: parseFloat(labLocation.latitude), longitude: parseFloat(labLocation.longitude) },
-      { latitude: parseFloat(userLocation.latitude), longitude: parseFloat(userLocation.longitude) }
-    )
+    bearing: bearing
   };
 };
 
@@ -52,8 +94,8 @@ const validateLocation = (latitude, longitude) => {
     latitude >= -90 &&
     latitude <= 90 &&
     longitude >= -180 &&
-    longitude <= 180 &&
-    latitude !== 0 && longitude !== 0 // Avoid default/null coordinates
+    longitude <= 180
+    // Removed the check for latitude !== 0 && longitude !== 0 as it's too restrictive
   );
 };
 

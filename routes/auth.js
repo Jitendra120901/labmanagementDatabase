@@ -171,14 +171,20 @@ router.post('/login', [
         await loginAttempt.save();
 
         if (!geofenceCheck.isWithin) {
-          return res.status(403).json({
+          const responseData = {
             message: 'Access denied. You must be within the lab premises to login.',
             distance: formatDistance(geofenceCheck.distance),
             distanceInMeters: geofenceCheck.distance,
             allowedRadius: formatDistance(user.labId.geofence.radius),
-            allowedRadiusInMeters: user.labId.geofence.radius,
-            bearing: geofenceCheck.bearing
-          });
+            allowedRadiusInMeters: user.labId.geofence.radius
+          };
+          
+          // Only include bearing if it's available
+          if (geofenceCheck.bearing !== null) {
+            responseData.bearing = geofenceCheck.bearing;
+          }
+          
+          return res.status(403).json(responseData);
         }
       } catch (geofenceError) {
         console.error('Geofence calculation error:', geofenceError);
