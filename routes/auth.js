@@ -8,7 +8,7 @@ const Lab = require('../models/Lab');
 const LoginAttempt = require('../models/LoginAttempt');
 const EmployeeSession = require('../models/EmployeeSession');
 const ActivityLog = require('../models/ActivityLog');
-const { isWithinGeofence, validateLocation } = require('../utils/geofence');
+const { isWithinGeofence, validateLocation, formatDistance } = require('../utils/geofence');
 const { auth, requireLabAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -143,37 +143,48 @@ router.post('/login', [
 
     // Check geofence for lab employees (lab admins can login from anywhere)
     if (user.role === 'lab_employee') {
-      const geofenceCheck = isWithinGeofence(
-        userLocation,
-        user.labId.location,
-        user.labId.geofence.radius
-      );
+      try {
+        const geofenceCheck = isWithinGeofence(
+          userLocation,
+          user.labId.location,
+          user.labId.geofence.radius
+        );
 
-      // Log attempt
-      const attemptData = {
-        userId: user._id,
-        labId: user.labId._id,
-        attemptLocation: userLocation,
-        isSuccessful: geofenceCheck.isWithin,
-        isWithinGeofence: geofenceCheck.isWithin,
-        distanceFromLab: geofenceCheck.distance,
-        ipAddress: req.ip,
-        userAgent: req.get('User-Agent')
-      };
+        // Log attempt
+        const attemptData = {
+          userId: user._id,
+          labId: user.labId._id,
+          attemptLocation: userLocation,
+          isSuccessful: geofenceCheck.isWithin,
+          isWithinGeofence: geofenceCheck.isWithin,
+          distanceFromLab: geofenceCheck.distance,
+          ipAddress: req.ip,
+          userAgent: req.get('User-Agent')
+        };
 
-      // Only add failureReason if login failed
-      if (!geofenceCheck.isWithin) {
-        attemptData.failureReason = 'outside_geofence';
-      }
+        // Only add failureReason if login failed
+        if (!geofenceCheck.isWithin) {
+          attemptData.failureReason = 'outside_geofence';
+        }
 
-      const loginAttempt = new LoginAttempt(attemptData);
-      await loginAttempt.save();
+        const loginAttempt = new LoginAttempt(attemptData);
+        await loginAttempt.save();
 
-      if (!geofenceCheck.isWithin) {
-        return res.status(403).json({
-          message: 'Access denied. You must be within the lab premises to login.',
-          distance: geofenceCheck.distance,
-          allowedRadius: user.labId.geofence.radius
+        if (!geofenceCheck.isWithin) {
+          return res.status(403).json({
+            message: 'Access denied. You must be within the lab premises to login.',
+            distance: formatDistance(geofenceCheck.distance),
+            distanceInMeters: geofenceCheck.distance,
+            allowedRadius: formatDistance(user.labId.geofence.radius),
+            allowedRadiusInMeters: user.labId.geofence.radius,
+            bearing: geofenceCheck.bearing
+          });
+        }
+      } catch (geofenceError) {
+        console.error('Geofence calculation error:', geofenceError);
+        return res.status(400).json({
+          message: 'Invalid location data provided',
+          error: geofenceError.message
         });
       }
     }
@@ -237,6 +248,19 @@ router.post('/login', [
     await session.save();
 
     // Log login activity in ActivityLog
+    let distanceFromLab = 0;
+    let isWithinGeofenceForLog = true;
+    
+    if (user.role === 'lab_employee') {
+      try {
+        const geofenceCheck = isWithinGeofence(userLocation, user.labId.location, user.labId.geofence.radius);
+        distanceFromLab = geofenceCheck.distance;
+        isWithinGeofenceForLog = geofenceCheck.isWithin;
+      } catch (error) {
+        console.error('Geofence check error in activity log:', error);
+      }
+    }
+
     await new ActivityLog({
       userId: user._id,
       labId: user.labId._id,
@@ -244,10 +268,8 @@ router.post('/login', [
       action: 'login',
       timestamp: new Date(),
       location: userLocation,
-      distanceFromLab: user.role === 'lab_employee' ? 
-        isWithinGeofence(userLocation, user.labId.location, user.labId.geofence.radius).distance : 0,
-      isWithinGeofence: user.role === 'lab_employee' ? 
-        isWithinGeofence(userLocation, user.labId.location, user.labId.geofence.radius).isWithin : true,
+      distanceFromLab: distanceFromLab,
+      isWithinGeofence: isWithinGeofenceForLog,
       metadata: {
         ...deviceInfo,
         endpoint: '/api/auth/login',
