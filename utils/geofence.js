@@ -1,5 +1,4 @@
-const geolib = require('geolib');
-
+// Enhanced geofence function with GPS accuracy handling
 const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
   // Validate input coordinates
   if (!userLocation || !labLocation) {
@@ -15,7 +14,6 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
   }
   
   // Calculate accurate distance using Haversine formula with high precision
-  // Use getPreciseDistance if available, otherwise fall back to getDistance
   let distance;
   try {
     distance = geolib.getPreciseDistance ? 
@@ -54,10 +52,14 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
     );
   }
   
-  // Convert radius from meters to meters (assuming radius is in meters)
+  // GPS accuracy buffer - account for GPS inaccuracy
+  const GPS_ACCURACY_BUFFER = 30; // 30 meters buffer for GPS inaccuracy
   const radiusInMeters = parseFloat(radius);
   
-  // Calculate bearing if getBearing is available
+  // Apply GPS accuracy buffer to the radius
+  const effectiveRadius = radiusInMeters + GPS_ACCURACY_BUFFER;
+  
+  // Calculate bearing if available
   let bearing = null;
   try {
     if (geolib.getBearing) {
@@ -72,34 +74,39 @@ const isWithinGeofence = (userLocation, labLocation, radius = 20) => {
       );
     }
   } catch (error) {
-    // Bearing calculation failed, continue without it
     bearing = null;
   }
   
   return {
-    isWithin: distance <= radiusInMeters,
-    distance: distance, // distance in meters
-    distanceInKm: Math.round((distance / 1000) * 100) / 100, // rounded to 2 decimal places
-    radiusInMeters: radiusInMeters,
-    bearing: bearing
+    isWithin: distance <= effectiveRadius, // Use effective radius with GPS buffer
+    distance: distance, // actual distance in meters
+    distanceInKm: Math.round((distance / 1000) * 100) / 100,
+    radiusInMeters: radiusInMeters, // original radius
+    effectiveRadius: effectiveRadius, // radius + GPS buffer
+    gpsAccuracyBuffer: GPS_ACCURACY_BUFFER,
+    bearing: bearing,
+    // Additional info for debugging
+    isWithinOriginalRadius: distance <= radiusInMeters,
+    isWithinGPSBuffer: distance <= effectiveRadius && distance > radiusInMeters
   };
 };
 
+// Enhanced validation that's more lenient
 const validateLocation = (latitude, longitude) => {
+  const lat = parseFloat(latitude);
+  const lng = parseFloat(longitude);
+  
   return (
-    typeof latitude === 'number' &&
-    typeof longitude === 'number' &&
-    !isNaN(latitude) &&
-    !isNaN(longitude) &&
-    latitude >= -90 &&
-    latitude <= 90 &&
-    longitude >= -180 &&
-    longitude <= 180
-    // Removed the check for latitude !== 0 && longitude !== 0 as it's too restrictive
+    !isNaN(lat) &&
+    !isNaN(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
   );
 };
 
-// Additional utility function for distance formatting
+// Enhanced distance formatting
 const formatDistance = (distanceInMeters) => {
   if (distanceInMeters < 1000) {
     return `${Math.round(distanceInMeters)} meters`;
@@ -108,4 +115,16 @@ const formatDistance = (distanceInMeters) => {
   }
 };
 
-module.exports = { isWithinGeofence, validateLocation, formatDistance };
+// New function to get GPS accuracy estimate
+const getGPSAccuracyEstimate = (userAgent) => {
+  // Different devices have different GPS accuracy
+  if (userAgent.includes('iPhone')) {
+    return 5; // iPhones generally have better GPS
+  } else if (userAgent.includes('Android')) {
+    return 10; // Android varies more
+  } else {
+    return 15; // Other devices
+  }
+};
+
+module.exports = { isWithinGeofence, validateLocation, formatDistance, getGPSAccuracyEstimate };
