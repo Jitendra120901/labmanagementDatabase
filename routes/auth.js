@@ -122,7 +122,7 @@ router.post('/login', [
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       // Log failed attempt
-      await new LoginAttempt({
+      const failedAttempt = new LoginAttempt({
         userId: user._id,
         labId: user.labId._id,
         attemptLocation: userLocation,
@@ -132,8 +132,9 @@ router.post('/login', [
         ipAddress: req.ip,
         userAgent: req.get('User-Agent'),
         failureReason: 'invalid_credentials'
-      }).save();
-
+      });
+      
+      await failedAttempt.save();
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
@@ -146,7 +147,7 @@ router.post('/login', [
       );
 
       // Log attempt
-      await new LoginAttempt({
+      const attemptData = {
         userId: user._id,
         labId: user.labId._id,
         attemptLocation: userLocation,
@@ -154,9 +155,16 @@ router.post('/login', [
         isWithinGeofence: geofenceCheck.isWithin,
         distanceFromLab: geofenceCheck.distance,
         ipAddress: req.ip,
-        userAgent: req.get('User-Agent'),
-        failureReason: geofenceCheck.isWithin ? null : 'outside_geofence'
-      }).save();
+        userAgent: req.get('User-Agent')
+      };
+
+      // Only add failureReason if login failed
+      if (!geofenceCheck.isWithin) {
+        attemptData.failureReason = 'outside_geofence';
+      }
+
+      const loginAttempt = new LoginAttempt(attemptData);
+      await loginAttempt.save();
 
       if (!geofenceCheck.isWithin) {
         return res.status(403).json({
@@ -167,7 +175,7 @@ router.post('/login', [
       }
     } else {
       // Log successful admin login
-      await new LoginAttempt({
+      const adminAttempt = new LoginAttempt({
         userId: user._id,
         labId: user.labId._id,
         attemptLocation: userLocation,
@@ -176,7 +184,10 @@ router.post('/login', [
         distanceFromLab: 0,
         ipAddress: req.ip,
         userAgent: req.get('User-Agent')
-      }).save();
+        // No failureReason for successful logins
+      });
+      
+      await adminAttempt.save();
     }
 
     // Update last login

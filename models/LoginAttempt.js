@@ -1,3 +1,4 @@
+// models/LoginAttempt.js
 const mongoose = require('mongoose');
 
 const loginAttemptSchema = new mongoose.Schema({
@@ -43,7 +44,8 @@ const loginAttemptSchema = new mongoose.Schema({
   },
   failureReason: {
     type: String,
-    enum: ['invalid_credentials', 'outside_geofence', 'account_inactive']
+    enum: ['invalid_credentials', 'outside_geofence', 'account_inactive'],
+    default: undefined // Allow undefined for successful logins
   },
   timestamp: {
     type: Date,
