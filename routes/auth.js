@@ -454,4 +454,85 @@ router.get('/session-history', auth, async (req, res) => {
   }
 });
 
+router.post('/verify-location', auth, async (req, res) => {
+  try {
+    const { latitude, longitude, userId } = req.body;
+    
+    // Validate input
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
+    }
+
+    // Get user info
+    const user = await User.findById(userId || req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Get lab info
+    const lab = await Lab.findById(user.labId);
+    if (!lab) {
+      return res.status(404).json({
+        success: false,
+        message: 'Lab not found'
+      });
+    }
+
+    // Check if user is within geofence
+    const userLocation = { latitude, longitude };
+    const labLocation = {
+      latitude: lab.location.latitude,
+      longitude: lab.location.longitude
+    };
+    
+    const geofenceResult = isWithinGeofence(
+      userLocation,
+      labLocation,
+      lab.geofence.radius
+    );
+
+    // Log the verification attempt
+    console.log(`Location verification for user ${user.email}:`, {
+      userLocation,
+      labLocation,
+      distance: geofenceResult.distance,
+      isWithin: geofenceResult.isWithin,
+      radius: lab.geofence.radius
+    });
+
+    // You might want to log this to a LocationCheck collection for audit purposes
+    // await LocationCheck.create({
+    //   userId: user._id,
+    //   labId: lab._id,
+    //   location: userLocation,
+    //   isWithinGeofence: geofenceResult.isWithin,
+    //   distance: geofenceResult.distance,
+    //   timestamp: new Date()
+    // });
+
+    res.json({
+      success: true,
+      isWithinGeofence: geofenceResult.isWithin,
+      distance: geofenceResult.distance,
+      radius: lab.geofence.radius,
+      message: geofenceResult.isWithin 
+        ? 'User is within lab premises' 
+        : 'User is outside lab premises'
+    });
+
+  } catch (error) {
+    console.error('Location verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during location verification'
+    });
+  }
+});
+
 module.exports = router;
