@@ -298,7 +298,8 @@ router.post('/login', [
           id: user.labId._id,
           name: user.labId.name
         }
-      }
+      },
+      useCurrentLocation: userLocation,
     });
 
   } catch (error) {
