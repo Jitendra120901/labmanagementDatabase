@@ -9,6 +9,7 @@ const connectDB = require('./config/database');
 // Import models for session cleanup
 const EmployeeSession = require('./models/EmployeeSession');
 const ActivityLog = require('./models/ActivityLog');
+const { log } = require('console');
 
 // Load environment variables
 dotenv.config();
@@ -39,6 +40,8 @@ const webSocketConnections = new Map(); // connectionId -> { ws, sessionId, type
 
 // WebSocket utility functions
 const sendMessage = (ws, type, data) => {
+  console.log(`📤 Sending messageiing type is  ${type} `);
+  
   if (ws && ws.readyState === WebSocket.OPEN) {
     try {
       ws.send(JSON.stringify({ type, data, timestamp: Date.now() }));
