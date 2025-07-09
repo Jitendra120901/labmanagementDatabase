@@ -173,6 +173,70 @@ function handlePasskeyCreated(ws, connectionId, data) {
   }
 }
 
+// NEW: Handle location request from desktop
+function handleLocationRequest(ws, connectionId, data) {
+  const connection = webSocketConnections.get(connectionId);
+  if (!connection) return;
+  
+  const { sessionId } = connection;
+  const { authData, requestId } = data;
+  
+  console.log(`Location request for session: ${sessionId}, requestId: ${requestId}`);
+  
+  const session = webSocketSessions.get(sessionId);
+  if (session && session.mobileWs) {
+    // Forward location request to mobile device
+    sendMessage(session.mobileWs, 'request_location', {
+      sessionId,
+      authData,
+      requestId,
+      message: 'Desktop requesting location data'
+    });
+    
+    console.log(`Location request forwarded to mobile for session: ${sessionId}`);
+  } else {
+    sendMessage(ws, 'error', { 
+      message: 'Mobile device not connected',
+      sessionId 
+    });
+  }
+}
+
+// NEW: Handle location data received from mobile
+function handleLocationReceived(ws, connectionId, data) {
+  const connection = webSocketConnections.get(connectionId);
+  if (!connection) return;
+  
+  const { sessionId } = connection;
+  const { location, authData } = data;
+  
+  console.log(`Location received for session: ${sessionId}`, location);
+  
+  const session = webSocketSessions.get(sessionId);
+  if (session && session.desktopWs) {
+    // Forward location data to desktop
+    sendMessage(session.desktopWs, 'location_received', {
+      sessionId,
+      location: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy,
+        altitude: location.altitude,
+        timestamp: location.timestamp
+      },
+      authData,
+      message: 'Location data received from mobile device'
+    });
+    
+    console.log(`Location data forwarded to desktop for session: ${sessionId}`);
+  } else {
+    sendMessage(ws, 'error', { 
+      message: 'Desktop not connected',
+      sessionId 
+    });
+  }
+}
+
 function handleLocationCheckComplete(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
   if (!connection) return;
@@ -250,6 +314,12 @@ wss.on('connection', (ws, req) => {
         case 'passkey_created':
           handlePasskeyCreated(ws, connectionId, data);
           break;
+        case 'request_location':
+          handleLocationRequest(ws, connectionId, data);
+          break;
+        case 'location_received':
+          handleLocationReceived(ws, connectionId, data);
+          break;
         case 'location_check_complete':
           handleLocationCheckComplete(ws, connectionId, data);
           break;
@@ -258,6 +328,7 @@ wss.on('connection', (ws, req) => {
           break;
         default:
           console.log(`Unknown message type: ${type}`);
+          sendMessage(ws, 'error', { message: `Unknown message type: ${type}` });
       }
     } catch (error) {
       console.error('Error parsing WebSocket message:', error);
@@ -321,7 +392,8 @@ app.get('/api/health', (req, res) => {
       realTimeTracking: true,
       sessionManagement: true,
       geofenceMonitoring: true,
-      webSocketAuth: true
+      webSocketAuth: true,
+      locationForwarding: true
     },
     webSocket: {
       activeSessions: webSocketSessions.size,
@@ -335,12 +407,22 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'Unified Lab Management System API with WebSocket Authentication',
-    version: '2.0.0',
+    version: '2.1.0',
     status: 'Running',
     webSocket: {
       endpoint: `ws://localhost:${process.env.PORT || 4000}`,
       activeSessions: webSocketSessions.size,
-      activeConnections: webSocketConnections.size
+      activeConnections: webSocketConnections.size,
+      supportedMessages: [
+        'register_desktop',
+        'register_mobile', 
+        'passkey_auth_success',
+        'passkey_created',
+        'request_location',
+        'location_received',
+        'location_check_complete',
+        'ping'
+      ]
     },
     endpoints: {
       health: '/api/health',
@@ -575,8 +657,9 @@ server.listen(PORT, () => {
   console.log(`[${new Date().toISOString()}] 🌐 HTTP API: http://localhost:${PORT}`);
   console.log(`[${new Date().toISOString()}] 📡 WebSocket: ws://localhost:${PORT}`);
   console.log(`[${new Date().toISOString()}] Environment: ${process.env.NODE_ENV}`);
-  console.log(`[${new Date().toISOString()}] Features: Real-time tracking, Session management, WebSocket auth`);
+  console.log(`[${new Date().toISOString()}] Features: Real-time tracking, Session management, WebSocket auth, Location forwarding`);
   console.log(`[${new Date().toISOString()}] Cleanup: DB sessions every 5min, Logs every 24h, WS sessions every 1h`);
+  console.log(`[${new Date().toISOString()}] WebSocket Messages: register_desktop, register_mobile, passkey_auth_success, passkey_created, request_location, location_received`);
 });
 
 module.exports = { app, server, wss };
