@@ -40,25 +40,37 @@ const webSocketConnections = new Map(); // connectionId -> { ws, sessionId, type
 // WebSocket utility functions
 const sendMessage = (ws, type, data) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type, data, timestamp: Date.now() }));
+    try {
+      ws.send(JSON.stringify({ type, data, timestamp: Date.now() }));
+      console.log(`📤 Sent ${type} message:`, data);
+    } catch (error) {
+      console.error(`❌ Error sending ${type} message:`, error);
+    }
+  } else {
+    console.warn(`⚠️ Cannot send ${type} message - WebSocket not ready`);
   }
 };
 
 const broadcastToSession = (sessionId, type, data, excludeWs = null) => {
   const session = webSocketSessions.get(sessionId);
   if (session) {
+    console.log(`📡 Broadcasting ${type} to session ${sessionId}`);
     if (session.desktopWs && session.desktopWs !== excludeWs) {
       sendMessage(session.desktopWs, type, data);
     }
     if (session.mobileWs && session.mobileWs !== excludeWs) {
       sendMessage(session.mobileWs, type, data);
     }
+  } else {
+    console.warn(`⚠️ Session ${sessionId} not found for broadcast`);
   }
 };
 
 // WebSocket handlers
 function handleDesktopRegistration(ws, connectionId, data) {
   const { sessionId, userEmail, labName } = data;
+  
+  console.log(`🖥️ Desktop registration for session: ${sessionId}`);
   
   webSocketConnections.set(connectionId, { ws, sessionId, type: 'desktop' });
   
@@ -75,7 +87,7 @@ function handleDesktopRegistration(ws, connectionId, data) {
     webSocketSessions.get(sessionId).desktopWs = ws;
   }
   
-  console.log(`Desktop registered for session: ${sessionId}`);
+  console.log(`✅ Desktop registered for session: ${sessionId}`);
   sendMessage(ws, 'desktop_registered', { 
     sessionId, 
     status: 'waiting_for_mobile',
@@ -84,18 +96,24 @@ function handleDesktopRegistration(ws, connectionId, data) {
 }
 
 function handleMobileRegistration(ws, connectionId, data) {
-  const { sessionId, userEmail, challenge } = data;
+  const { sessionId, userEmail, challenge, requireLocation } = data;
+  
+  console.log(`📱 Mobile registration for session: ${sessionId}, requireLocation: ${requireLocation}`);
   
   webSocketConnections.set(connectionId, { ws, sessionId, type: 'mobile' });
   
   if (webSocketSessions.has(sessionId)) {
-    webSocketSessions.get(sessionId).mobileWs = ws;
-    console.log(`Mobile registered for session: ${sessionId}`);
+    const session = webSocketSessions.get(sessionId);
+    session.mobileWs = ws;
+    session.requireLocation = requireLocation; // Store the location requirement
+    
+    console.log(`✅ Mobile registered for session: ${sessionId}`);
     
     sendMessage(ws, 'mobile_registered', { 
       sessionId,
       userEmail,
       challenge,
+      requireLocation,
       message: 'Ready for passkey authentication'
     });
     
@@ -103,88 +121,162 @@ function handleMobileRegistration(ws, connectionId, data) {
       message: 'Mobile device connected. Waiting for authentication...' 
     }, ws);
   } else {
+    console.error(`❌ Invalid session ID: ${sessionId}`);
     sendMessage(ws, 'error', { message: 'Invalid session ID' });
   }
 }
 
 function handlePasskeyAuthSuccess(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
-  if (!connection) return;
+  if (!connection) {
+    console.error(`❌ Connection not found for ID: ${connectionId}`);
+    return;
+  }
   
   const { sessionId } = connection;
-  const { credential, userEmail, deviceInfo } = data;
+  const { authData } = data;
+  
+  console.log(`🔐 Passkey authentication successful for session: ${sessionId}`);
   
   const session = webSocketSessions.get(sessionId);
   if (session) {
     session.authData = {
       success: true,
-      credential,
-      userEmail,
-      deviceInfo,
+      credential: authData.credential,
+      userEmail: authData.userEmail,
+      deviceInfo: authData.deviceInfo,
       timestamp: Date.now(),
       type: 'authentication'
     };
     
-    console.log(`Passkey authentication successful for session: ${sessionId}`);
+    console.log(`✅ Auth data stored for session: ${sessionId}`);
     
-    sendMessage(ws, 'auth_success_confirmed', {
-      message: 'Authentication successful! Return to desktop.',
-      sessionId
+    // Send confirmation to mobile
+    sendMessage(ws, 'passkey_verified_confirmed', {
+      message: 'Authentication successful!',
+      sessionId,
+      requireLocation: session.requireLocation
     });
     
-    broadcastToSession(sessionId, 'passkey_verified', {
-      message: 'Passkey authentication successful. Checking location...',
-      authData: session.authData,
-      nextStep: 'location_check'
-    }, ws);
+    // Notify desktop about successful authentication
+    if (session.desktopWs) {
+      sendMessage(session.desktopWs, 'passkey_verified', {
+        message: 'Passkey authentication successful. Checking location...',
+        authData: session.authData,
+        nextStep: 'location_check',
+        requireLocation: session.requireLocation
+      });
+      
+      // If location is required, desktop should now request location
+      if (session.requireLocation) {
+        console.log(`📍 Location required for session ${sessionId}, desktop should request location`);
+        
+        // Send location request instruction to desktop
+        sendMessage(session.desktopWs, 'request_location_from_mobile', {
+          sessionId,
+          authData: session.authData,
+          message: 'Please request location from mobile device'
+        });
+      } else {
+        // No location required, proceed with access granted
+        console.log(`✅ No location required for session ${sessionId}, granting access`);
+        broadcastToSession(sessionId, 'access_granted', {
+          message: 'Access granted! Welcome to the lab.',
+          authData: session.authData,
+          redirectTo: '/dashboard/employee'
+        });
+      }
+    }
+  } else {
+    console.error(`❌ Session not found: ${sessionId}`);
+    sendMessage(ws, 'error', { message: 'Session not found' });
   }
 }
 
 function handlePasskeyCreated(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
-  if (!connection) return;
+  if (!connection) {
+    console.error(`❌ Connection not found for ID: ${connectionId}`);
+    return;
+  }
   
   const { sessionId } = connection;
-  const { credential, userEmail, deviceInfo } = data;
+  const { authData } = data;
+  
+  console.log(`🆕 Passkey created for session: ${sessionId}`);
   
   const session = webSocketSessions.get(sessionId);
   if (session) {
     session.authData = {
       success: true,
-      credential,
-      userEmail,
-      deviceInfo,
+      credential: authData.credential,
+      userEmail: authData.userEmail,
+      deviceInfo: authData.deviceInfo,
       timestamp: Date.now(),
       type: 'creation'
     };
     
-    console.log(`Passkey created for session: ${sessionId}`);
+    console.log(`✅ Creation data stored for session: ${sessionId}`);
     
+    // Send confirmation to mobile
     sendMessage(ws, 'passkey_created_confirmed', {
-      message: 'Passkey created successfully! Return to desktop.',
-      sessionId
+      message: 'Passkey created successfully!',
+      sessionId,
+      requireLocation: session.requireLocation
     });
     
-    broadcastToSession(sessionId, 'passkey_created', {
-      message: 'Passkey created successfully. Checking location...',
-      authData: session.authData,
-      nextStep: 'location_check'
-    }, ws);
+    // Notify desktop about successful passkey creation
+    if (session.desktopWs) {
+      sendMessage(session.desktopWs, 'passkey_created', {
+        message: 'Passkey created successfully. Checking location...',
+        authData: session.authData,
+        nextStep: 'location_check',
+        requireLocation: session.requireLocation
+      });
+      
+      // If location is required, desktop should now request location
+      if (session.requireLocation) {
+        console.log(`📍 Location required for session ${sessionId}, desktop should request location`);
+        
+        // Send location request instruction to desktop
+        sendMessage(session.desktopWs, 'request_location_from_mobile', {
+          sessionId,
+          authData: session.authData,
+          message: 'Please request location from mobile device'
+        });
+      } else {
+        // No location required, proceed with access granted
+        console.log(`✅ No location required for session ${sessionId}, granting access`);
+        broadcastToSession(sessionId, 'access_granted', {
+          message: 'Access granted! Welcome to the lab.',
+          authData: session.authData,
+          redirectTo: '/dashboard/employee'
+        });
+      }
+    }
+  } else {
+    console.error(`❌ Session not found: ${sessionId}`);
+    sendMessage(ws, 'error', { message: 'Session not found' });
   }
 }
 
-// NEW: Handle location request from desktop
+// Handle location request from desktop
 function handleLocationRequest(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
-  if (!connection) return;
+  if (!connection) {
+    console.error(`❌ Connection not found for ID: ${connectionId}`);
+    return;
+  }
   
   const { sessionId } = connection;
   const { authData, requestId } = data;
   
-  console.log(`Location request for session: ${sessionId}, requestId: ${requestId}`);
+  console.log(`🖥️ Desktop requesting location for session: ${sessionId}, requestId: ${requestId}`);
   
   const session = webSocketSessions.get(sessionId);
   if (session && session.mobileWs) {
+    console.log(`📍 Forwarding location request to mobile for session: ${sessionId}`);
+    
     // Forward location request to mobile device
     sendMessage(session.mobileWs, 'request_location', {
       sessionId,
@@ -193,8 +285,9 @@ function handleLocationRequest(ws, connectionId, data) {
       message: 'Desktop requesting location data'
     });
     
-    console.log(`Location request forwarded to mobile for session: ${sessionId}`);
+    console.log(`✅ Location request forwarded to mobile for session: ${sessionId}`);
   } else {
+    console.error(`❌ Mobile device not connected for session: ${sessionId}`);
     sendMessage(ws, 'error', { 
       message: 'Mobile device not connected',
       sessionId 
@@ -202,18 +295,30 @@ function handleLocationRequest(ws, connectionId, data) {
   }
 }
 
-// NEW: Handle location data received from mobile
+// Handle location data received from mobile
 function handleLocationReceived(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
-  if (!connection) return;
+  if (!connection) {
+    console.error(`❌ Connection not found for ID: ${connectionId}`);
+    return;
+  }
   
   const { sessionId } = connection;
   const { location, authData } = data;
   
-  console.log(`Location received for session: ${sessionId}`, location);
+  console.log(`📱 Location received from mobile for session: ${sessionId}:`, {
+    lat: location.latitude,
+    lng: location.longitude,
+    accuracy: location.accuracy
+  });
   
   const session = webSocketSessions.get(sessionId);
   if (session && session.desktopWs) {
+    console.log(`📍 Forwarding location data to desktop for session: ${sessionId}`);
+    
+    // Store location data in session
+    session.locationData = location;
+    
     // Forward location data to desktop
     sendMessage(session.desktopWs, 'location_received', {
       sessionId,
@@ -228,8 +333,9 @@ function handleLocationReceived(ws, connectionId, data) {
       message: 'Location data received from mobile device'
     });
     
-    console.log(`Location data forwarded to desktop for session: ${sessionId}`);
+    console.log(`✅ Location data forwarded to desktop for session: ${sessionId}`);
   } else {
+    console.error(`❌ Desktop not connected for session: ${sessionId}`);
     sendMessage(ws, 'error', { 
       message: 'Desktop not connected',
       sessionId 
@@ -239,26 +345,65 @@ function handleLocationReceived(ws, connectionId, data) {
 
 function handleLocationCheckComplete(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
-  if (!connection) return;
+  if (!connection) {
+    console.error(`❌ Connection not found for ID: ${connectionId}`);
+    return;
+  }
   
   const { sessionId } = connection;
   const { success, distance, location, error } = data;
   
-  console.log(`Location check complete for session: ${sessionId}`, { success, distance });
+  console.log(`🎯 Location check complete for session: ${sessionId}`, { 
+    success, 
+    distance: distance ? `${distance}m` : 'N/A' 
+  });
   
-  if (success) {
-    broadcastToSession(sessionId, 'access_granted', {
-      message: 'Access granted! Welcome to the lab.',
-      distance,
-      location,
-      redirectTo: '/dashboard/employee'
-    });
+  const session = webSocketSessions.get(sessionId);
+  if (session) {
+    // Store final result in session
+    session.locationCheckResult = { success, distance, location, error };
+    
+    if (success) {
+      console.log(`✅ Access granted for session: ${sessionId}`);
+      broadcastToSession(sessionId, 'access_granted', {
+        message: 'Access granted! Welcome to the lab.',
+        distance,
+        location,
+        authData: session.authData,
+        redirectTo: '/dashboard/employee'
+      });
+      
+      // Send final success to mobile
+      if (session.mobileWs) {
+        sendMessage(session.mobileWs, 'location_check_complete', {
+          success: true,
+          distance,
+          location,
+          message: 'Location verified successfully!'
+        });
+      }
+    } else {
+      console.log(`❌ Access denied for session: ${sessionId}: ${error}`);
+      broadcastToSession(sessionId, 'access_denied', {
+        message: error || 'Access denied. Location check failed.',
+        distance,
+        location,
+        authData: session.authData
+      });
+      
+      // Send failure to mobile
+      if (session.mobileWs) {
+        sendMessage(session.mobileWs, 'location_check_complete', {
+          success: false,
+          distance,
+          location,
+          error: error || 'Location check failed',
+          message: 'Location verification failed'
+        });
+      }
+    }
   } else {
-    broadcastToSession(sessionId, 'access_denied', {
-      message: error || 'Access denied. Location check failed.',
-      distance,
-      location
-    });
+    console.error(`❌ Session not found for location check: ${sessionId}`);
   }
 }
 
@@ -266,7 +411,7 @@ function handleWebSocketDisconnection(connectionId) {
   const connection = webSocketConnections.get(connectionId);
   if (connection) {
     const { sessionId, type } = connection;
-    console.log(`${type} disconnected from session: ${sessionId}`);
+    console.log(`🔌 ${type} disconnected from session: ${sessionId}`);
     
     const session = webSocketSessions.get(sessionId);
     if (session) {
@@ -279,8 +424,10 @@ function handleWebSocketDisconnection(connectionId) {
       // Clean up session after 5 minutes if both disconnected
       if (!session.desktopWs && !session.mobileWs) {
         setTimeout(() => {
-          webSocketSessions.delete(sessionId);
-          console.log(`WebSocket session ${sessionId} cleaned up`);
+          if (webSocketSessions.has(sessionId)) {
+            webSocketSessions.delete(sessionId);
+            console.log(`🧹 WebSocket session ${sessionId} cleaned up`);
+          }
         }, 300000); // 5 minutes
       }
     }
@@ -292,14 +439,14 @@ function handleWebSocketDisconnection(connectionId) {
 // WebSocket connection handler
 wss.on('connection', (ws, req) => {
   const connectionId = uuidv4();
-  console.log(`New WebSocket connection: ${connectionId}`);
+  console.log(`🔗 New WebSocket connection: ${connectionId}`);
   
   sendMessage(ws, 'connected', { connectionId });
   
   ws.on('message', (message) => {
     try {
       const { type, data } = JSON.parse(message);
-      console.log(`Received message: ${type}`, data);
+      console.log(`📥 Received message: ${type} from ${connectionId}`);
       
       switch (type) {
         case 'register_desktop':
@@ -327,21 +474,22 @@ wss.on('connection', (ws, req) => {
           sendMessage(ws, 'pong', { timestamp: Date.now() });
           break;
         default:
-          console.log(`Unknown message type: ${type}`);
+          console.warn(`❓ Unknown message type: ${type}`);
           sendMessage(ws, 'error', { message: `Unknown message type: ${type}` });
       }
     } catch (error) {
-      console.error('Error parsing WebSocket message:', error);
+      console.error('❌ Error parsing WebSocket message:', error);
       sendMessage(ws, 'error', { message: 'Invalid message format' });
     }
   });
   
   ws.on('close', () => {
+    console.log(`🔌 WebSocket connection closed: ${connectionId}`);
     handleWebSocketDisconnection(connectionId);
   });
   
   ws.on('error', (error) => {
-    console.error(`WebSocket error for ${connectionId}:`, error);
+    console.error(`❌ WebSocket error for ${connectionId}:`, error);
     handleWebSocketDisconnection(connectionId);
   });
 });
@@ -359,7 +507,9 @@ app.get('/api/websocket/sessions', (req, res) => {
     hasDesktop: !!session.desktopWs,
     hasMobile: !!session.mobileWs,
     hasAuth: !!session.authData,
+    hasLocation: !!session.locationData,
     userEmail: session.userEmail,
+    requireLocation: session.requireLocation,
     createdAt: session.createdAt
   }));
   
@@ -374,6 +524,8 @@ app.post('/api/websocket/verify-session', (req, res) => {
     res.json({
       valid: true,
       hasAuth: !!session.authData,
+      hasLocation: !!session.locationData,
+      requireLocation: session.requireLocation,
       userEmail: session.userEmail,
       labName: session.labName
     });
@@ -407,7 +559,7 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'Unified Lab Management System API with WebSocket Authentication',
-    version: '2.1.0',
+    version: '2.2.0',
     status: 'Running',
     webSocket: {
       endpoint: `ws://localhost:${process.env.PORT || 4000}`,
@@ -547,7 +699,7 @@ const cleanupOldWebSocketSessions = () => {
   for (const [sessionId, session] of webSocketSessions.entries()) {
     if (session.createdAt < oneHourAgo) {
       webSocketSessions.delete(sessionId);
-      console.log(`Cleaned up old WebSocket session: ${sessionId}`);
+      console.log(`🧹 Cleaned up old WebSocket session: ${sessionId}`);
     }
   }
 };
