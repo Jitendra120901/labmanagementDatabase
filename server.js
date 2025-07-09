@@ -248,11 +248,11 @@ function handlePasskeyAuthSuccess(ws, connectionId, data) {
         });
       }
     }
-  } else {
+   else {
     console.error(`❌ Session not found: ${sessionId}`);
     sendMessage(ws, 'error', { message: 'Session not found' });
   }
-}
+
 
 function handlePasskeyCreated(ws, connectionId, data) {
   const connection = webSocketConnections.get(connectionId);
