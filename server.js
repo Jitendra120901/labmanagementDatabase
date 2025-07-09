@@ -193,7 +193,7 @@ function handlePasskeyAuthSuccess(ws, connectionId, data) {
         console.log(`📍 Location required for session ${sessionId}, desktop should request location`);
         
         // Send location request instruction to desktop
-        sendMessage(session.desktopWs, 'request_location_from_mobile', {
+        sendMessage(session.desktopWs, 'request_location', {
           sessionId,
           authData: session.authData,
           message: 'Please request location from mobile device'
@@ -275,7 +275,7 @@ function handlePasskeyCreated(ws, connectionId, data) {
         console.log(`📍 Location required for session ${sessionId}, desktop should request location`);
         
         // Send location request instruction to desktop
-        sendMessage(session.desktopWs, 'request_location_from_mobile', {
+        sendMessage(session.desktopWs, 'request_location', {
           sessionId,
           authData: session.authData,
           message: 'Please request location from mobile device'
