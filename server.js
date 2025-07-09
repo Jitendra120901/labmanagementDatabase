@@ -140,11 +140,14 @@ function handlePasskeyAuthSuccess(ws, connectionId, data) {
   }
   
   const { sessionId } = connection;
-  const { authData } = data;
   
   console.log(`🔐 Passkey authentication successful for session: ${sessionId}`);
   console.log(`🔐 Received data:`, JSON.stringify(data, null, 2));
-  console.log(`🔐 Received authData:`, authData);
+  
+  // Handle both nested and direct authData formats
+  let authData = data.authData || data;
+  
+  console.log(`🔐 Processed authData:`, authData);
   
   if (!authData) {
     console.error(`❌ No authData received for session: ${sessionId}`);
@@ -219,11 +222,14 @@ function handlePasskeyCreated(ws, connectionId, data) {
   }
   
   const { sessionId } = connection;
-  const { authData } = data;
   
   console.log(`🆕 Passkey created for session: ${sessionId}`);
   console.log(`🆕 Received data:`, JSON.stringify(data, null, 2));
-  console.log(`🆕 Received authData:`, authData);
+  
+  // Handle both nested and direct authData formats
+  let authData = data.authData || data;
+  
+  console.log(`🆕 Processed authData:`, authData);
   
   if (!authData) {
     console.error(`❌ No authData received for session: ${sessionId}`);
