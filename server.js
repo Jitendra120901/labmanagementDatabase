@@ -310,18 +310,19 @@ function handleLocationRequest(ws, connectionId, data) {
   console.log(`🖥️ Desktop requesting location for session: ${sessionId}, requestId: ${requestId}`);
   
   const session = webSocketSessions.get(sessionId);
+  sendMessage(session.mobileWs, 'request_location', {
+    sessionId,
+    authData,
+    requestId,
+    message: 'Desktop requesting location data'
+  });
+  
+  console.log(`✅ Location request forwarded to mobile for session: ${sessionId}`);
   if (session && session.mobileWs) {
     console.log(`📍 Forwarding location request to mobile for session: ${sessionId}`);
     
     // Forward location request to mobile device
-    sendMessage(session.mobileWs, 'request_location', {
-      sessionId,
-      authData,
-      requestId,
-      message: 'Desktop requesting location data'
-    });
-    
-    console.log(`✅ Location request forwarded to mobile for session: ${sessionId}`);
+  
   } else {
     console.error(`❌ Mobile device not connected for session: ${sessionId}`);
     sendMessage(ws, 'error', { 
