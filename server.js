@@ -96,29 +96,34 @@ function handleDesktopRegistration(ws, connectionId, data) {
 }
 
 function handleMobileRegistration(ws, connectionId, data) {
-  const { sessionId, userEmail, challenge, requireLocation } = data;
+  const { sessionId, userEmail, challenge, requireLocation, mode } = data;
   
-  console.log(`📱 Mobile registration for session: ${sessionId}, requireLocation: ${requireLocation}`);
+  console.log(`📱 Mobile registration for session: ${sessionId}`);
+  console.log(`📱 Registration data:`, { userEmail, mode, requireLocation });
   
   webSocketConnections.set(connectionId, { ws, sessionId, type: 'mobile' });
   
   if (webSocketSessions.has(sessionId)) {
     const session = webSocketSessions.get(sessionId);
     session.mobileWs = ws;
-    session.requireLocation = requireLocation; // Store the location requirement
+    session.requireLocation = requireLocation || false; // Default to false if not specified
+    session.mode = mode || 'login';
     
-    console.log(`✅ Mobile registered for session: ${sessionId}`);
+    console.log(`✅ Mobile registered for session: ${sessionId}, requireLocation: ${session.requireLocation}`);
     
     sendMessage(ws, 'mobile_registered', { 
       sessionId,
       userEmail,
       challenge,
-      requireLocation,
+      requireLocation: session.requireLocation,
+      mode: session.mode,
       message: 'Ready for passkey authentication'
     });
     
     broadcastToSession(sessionId, 'mobile_connected', { 
-      message: 'Mobile device connected. Waiting for authentication...' 
+      message: 'Mobile device connected. Waiting for authentication...',
+      requireLocation: session.requireLocation,
+      mode: session.mode
     }, ws);
   } else {
     console.error(`❌ Invalid session ID: ${sessionId}`);
@@ -137,6 +142,22 @@ function handlePasskeyAuthSuccess(ws, connectionId, data) {
   const { authData } = data;
   
   console.log(`🔐 Passkey authentication successful for session: ${sessionId}`);
+  console.log(`🔐 Received data:`, JSON.stringify(data, null, 2));
+  console.log(`🔐 Received authData:`, authData);
+  
+  if (!authData) {
+    console.error(`❌ No authData received for session: ${sessionId}`);
+    console.error(`❌ Full data object:`, data);
+    sendMessage(ws, 'error', { message: 'No authentication data received' });
+    return;
+  }
+  
+  if (!authData.credential) {
+    console.error(`❌ No credential in authData for session: ${sessionId}`);
+    console.error(`❌ AuthData structure:`, authData);
+    sendMessage(ws, 'error', { message: 'Invalid authentication data structure' });
+    return;
+  }
   
   const session = webSocketSessions.get(sessionId);
   if (session) {
@@ -204,6 +225,13 @@ function handlePasskeyCreated(ws, connectionId, data) {
   const { authData } = data;
   
   console.log(`🆕 Passkey created for session: ${sessionId}`);
+  console.log(`🆕 Received authData:`, authData);
+  
+  if (!authData) {
+    console.error(`❌ No authData received for session: ${sessionId}`);
+    sendMessage(ws, 'error', { message: 'No authentication data received' });
+    return;
+  }
   
   const session = webSocketSessions.get(sessionId);
   if (session) {
